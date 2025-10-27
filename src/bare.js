@@ -1,175 +1,87 @@
 /* globals document confirm btoa */
 /* globals b2Vec2 */
-// Global Vars
-
-var worldRun = require("./world/run.js");
-
-var graph_fns = require("./draw/plot-graphs.js");
-var plot_graphs = graph_fns.plotGraphs;
-
+var graphFns = require("./draw/plot-graphs.js");
+var simulationFactory = require("./lib/graph-simulation.js");
 
 // ======= WORLD STATE ======
 
 var $graphList = document.querySelector("#graph-list");
 var $graphTemplate = document.querySelector("#graph-template");
+var $seedInput = document.querySelector("#newseed");
 
-function stringToHTML(s){
-  var temp = document.createElement('div');
+function stringToHTML(s) {
+  var temp = document.createElement("div");
   temp.innerHTML = s;
   return temp.children[0];
 }
 
-var states, runners, results, graphState = {};
+var graphElements = new Map();
 
-function updateUI(key, scores){
-  var $graph = $graphList.querySelector("#graph-" + key);
-  var $newGraph = stringToHTML($graphTemplate.innerHTML);
-  $newGraph.id = "graph-" + key;
-  if($graph){
-    $graphList.replaceChild($graph, $newGraph);
-  } else {
-    $graphList.appendChild($newGraph);
+function ensureGraph(key) {
+  var refs = graphElements.get(key);
+  if (refs) {
+    return refs;
   }
-  console.log($newGraph);
-  var scatterPlotElem = $newGraph.querySelector(".scatterplot");
-  scatterPlotElem.id = "graph-" + key + "-scatter";
-  graphState[key] = plot_graphs(
-    $newGraph.querySelector(".graphcanvas"),
-    $newGraph.querySelector(".topscores"),
-    scatterPlotElem,
-    graphState[key],
-    scores,
-    {}
-  );
+  var $graph = stringToHTML($graphTemplate.innerHTML);
+  $graph.id = "graph-" + key;
+  $graphList.appendChild($graph);
+  refs = {
+    root: $graph,
+    canvas: $graph.querySelector(".graphcanvas"),
+    topScores: $graph.querySelector(".topscores"),
+    scatter: $graph.querySelector(".scatterplot"),
+  };
+  graphElements.set(key, refs);
+  return refs;
 }
 
-var generationConfig = require("./generation-config");
-
-var box2dfps = 60;
-var max_car_health = box2dfps * 10;
-
-var world_def = {
-  gravity: new b2Vec2(0.0, -9.81),
-  doSleep: true,
-  floorseed: btoa(Math.seedrandom()),
-  tileDimensions: new b2Vec2(1.5, 0.15),
-  maxFloorTiles: 200,
-  mutable_floor: false,
-  box2dfps: box2dfps,
-  motorSpeed: 20,
-  max_car_health: max_car_health,
-  schema: generationConfig.constants.schema
-}
-
-var manageRound = {
-  genetic: require("./machine-learning/genetic-algorithm/manage-round.js"),
-  annealing: require("./machine-learning/simulated-annealing/manage-round.js"),
-};
-
-var createListeners = function(key){
-  return {
-    preCarStep: function(){},
-    carStep: function(){},
-    carDeath: function(carInfo){
-      carInfo.score.i = states[key].counter;
-    },
-    generationEnd: function(results){
-      handleRoundEnd(key, results);
+function clearGraphs() {
+  graphElements.forEach(function (refs) {
+    graphFns.clearGraphics(refs.canvas);
+    refs.topScores.innerHTML = "";
+    if (refs.scatter) {
+      refs.scatter.innerHTML = "";
     }
-  }
-}
-
-function generationZero(){
-  var obj = Object.keys(manageRound).reduce(function(obj, key){
-    obj.states[key] = manageRound[key].generationZero(generationConfig());
-    obj.runners[key] = worldRun(
-      world_def, obj.states[key].generation, createListeners(key)
-    );
-    obj.results[key] = [];
-    graphState[key] = {}
-    return obj;
-  }, {states: {}, runners: {}, results: {}});
-  states = obj.states;
-  runners = obj.runners;
-  results = obj.results;
-}
-
-function handleRoundEnd(key, scores){
-  var previousCounter = states[key].counter;
-  states[key] = manageRound[key].nextGeneration(
-    states[key], scores, generationConfig()
-  );
-  runners[key] = worldRun(
-    world_def, states[key].generation, createListeners(key)
-  );
-  if(states[key].counter === previousCounter){
-    console.log(results);
-    results[key] = results[key].concat(scores);
-  } else {
-    handleGenerationEnd(key);
-    results[key] = [];
-  }
-}
-
-function runRound(){
-  var toRun = new Map();
-  Object.keys(states).forEach(function(key){ toRun.set(key, states[key].counter) });
-  console.log(toRun);
-  while(toRun.size){
-    console.log("running");
-    Array.from(toRun.keys()).forEach(function(key){
-      if(states[key].counter === toRun.get(key)){
-        runners[key].step();
-      } else {
-        toRun.delete(key);
-      }
-    });
-  }
-}
-
-function handleGenerationEnd(key){
-  var scores = results[key];
-  scores.sort(function (a, b) {
-    if (a.score.v > b.score.v) {
-      return -1
-    } else {
-      return 1
-    }
-  })
-  updateUI(key, scores);
-  results[key] = [];
-}
-
-function cw_resetPopulationUI() {
+  });
   $graphList.innerHTML = "";
+  graphElements.clear();
 }
 
-function cw_resetWorld() {
-  cw_resetPopulationUI();
-  Math.seedrandom();
-  generationZero();
-}
+var simulation = simulationFactory.createGraphSimulation({
+  onGenerationEnd: function (payload) {
+    var key = payload.key;
+    var refs = ensureGraph(key);
+    return graphFns.plotGraphs(
+      refs.canvas,
+      refs.topScores,
+      refs.scatter,
+      payload.previousGraphState,
+      payload.scores,
+      {}
+    );
+  },
+  onReset: function () {
+    clearGraphs();
+  },
+});
 
-document.querySelector("#new-population").addEventListener("click", function(){
-  cw_resetPopulationUI()
-  generationZero();
-})
+document.querySelector("#new-population").addEventListener("click", function () {
+  simulation.resetWorld();
+});
 
-
-document.querySelector("#confirm-reset").addEventListener("click", function(){
-  cw_confirmResetWorld()
-})
-
-document.querySelector("#fast-forward").addEventListener("click", function(){
-  runRound();
-})
-
-function cw_confirmResetWorld() {
-  if (confirm('Really reset world?')) {
-    cw_resetWorld();
-  } else {
-    return false;
+document.querySelector("#confirm-reset").addEventListener("click", function () {
+  if (confirm("Really reset world?")) {
+    var seed = ($seedInput && $seedInput.value || "").trim();
+    var overrides = {};
+    if (seed) {
+      overrides.floorseed = btoa(seed);
+    }
+    simulation.resetWorld(overrides);
   }
-}
+});
 
-cw_resetWorld();
+document.querySelector("#fast-forward").addEventListener("click", function () {
+  simulation.runRound();
+});
+
+simulation.resetWorld();
